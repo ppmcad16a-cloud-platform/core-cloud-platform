@@ -1,0 +1,49 @@
+name: Reusable Java Application Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      java-version:
+        required: false
+        type: string
+        default: "21"
+
+      run-tests:
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout application
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ inputs.java-version }}
+          cache: maven
+
+      - name: Show Java version
+        run: java -version
+
+      - name: Compile
+        run: mvn clean compile
+
+      - name: Run tests
+        if: ${{ inputs.run-tests }}
+        run: mvn test
+
+      - name: Package
+        run: mvn package -DskipTests
+
+      - name: Upload JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalog-service-jar
+          path: target/*.jar
