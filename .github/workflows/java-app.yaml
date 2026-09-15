@@ -54,6 +54,20 @@ jobs:
       - name: Package
         run: mvn package -DskipTests
 
+      # ------------------------------------------------------
+      # Upload packaged Java application.
+      #
+      # Jobs execute on independent runners, so target/*.jar
+      # must be transferred to the Docker job.
+      # ------------------------------------------------------
+      - name: Upload Java build artifact
+        if: ${{ inputs.build-docker }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-build-artifact
+          path: target/*.jar
+          retention-days: 1  
+
         # ==========================================================
   # Container Build
   #
@@ -62,13 +76,15 @@ jobs:
   # Instead of duplicating Docker logic here, we reuse the
   # centralized docker-build.yaml workflow.
   # ==========================================================
-  docker:
+    docker:
     needs: build
 
-    # Allows applications to enable Docker gradually.
     if: ${{ inputs.build-docker }}
 
     uses: ppmcad16a-cloud-platform/core-cloud-platform/.github/workflows/docker-build.yaml@main
 
     with:
       image-name: ${{ inputs.image-name }}
+
+      # Tell Docker workflow which artifact it needs.
+      application-artifact: java-build-artifact

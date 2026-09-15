@@ -41,6 +41,12 @@ on:
         type: string
         default: "./Dockerfile"
 
+      application-artifact:
+        description: "GitHub Actions artifact containing application build output"
+        required: false
+        type: string
+        default: ""  
+
     outputs:
 
       # Makes the generated tag available to the calling workflow.
@@ -69,6 +75,22 @@ jobs:
       # ------------------------------------------------------
       - name: Checkout application
         uses: actions/checkout@v4
+
+            # ------------------------------------------------------
+      # Download application build output when supplied.
+      #
+      # Java applications use this to retrieve the JAR
+      # produced by the previous build job.
+      #
+      # merge-multiple is unnecessary because we currently
+      # expect one artifact.
+      # ------------------------------------------------------
+      - name: Download application artifact
+        if: ${{ inputs.application-artifact != '' }}
+        uses: actions/download-artifact@v5
+        with:
+          name: ${{ inputs.application-artifact }}
+          path: target  
 
 
       # ------------------------------------------------------
