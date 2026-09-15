@@ -1,0 +1,192 @@
+# ============================================================
+# Reusable Docker Build Workflow
+#
+# Purpose:
+#   1. Checkout the calling application's source code
+#   2. Generate an immutable image tag
+#   3. Build the application's Docker image
+#   4. Scan the image with Trivy
+#   5. Export the image as a tar file
+#   6. Upload it as a GitHub Actions artifact
+#
+# Later:
+#   Instead of transferring the image as a tar artifact,
+#   we will push it to GAR / ECR / ACR.
+# ============================================================
+
+name: Reusable Docker Build
+
+on:
+  workflow_call:
+    inputs:
+
+      # Name of the Docker image.
+      # Example: identity-server
+      image-name:
+        description: "Docker image name"
+        required: true
+        type: string
+
+      # Location of Dockerfile relative to repository root.
+      # "." means Dockerfile is in repository root.
+      docker-context:
+        description: "Docker build context"
+        required: false
+        type: string
+        default: "."
+
+      dockerfile:
+        description: "Path to Dockerfile"
+        required: false
+        type: string
+        default: "./Dockerfile"
+
+    outputs:
+
+      # Makes the generated tag available to the calling workflow.
+      image-tag:
+        description: "Generated Docker image tag"
+        value: ${{ jobs.docker-build.outputs.image-tag }}
+
+jobs:
+
+  docker-build:
+    name: Build and Scan Docker Image
+
+    runs-on: ubuntu-latest
+
+    outputs:
+      image-tag: ${{ steps.version.outputs.image-tag }}
+
+    steps:
+
+      # ------------------------------------------------------
+      # Step 1: Checkout application repository
+      #
+      # Because this reusable workflow is called by an
+      # application repository, checkout checks out the
+      # application's source code.
+      # ------------------------------------------------------
+      - name: Checkout application
+        uses: actions/checkout@v4
+
+
+      # ------------------------------------------------------
+      # Step 2: Generate image version
+      #
+      # Example:
+      #   main-a1b2c3d
+      #
+      # github.sha contains the Git commit SHA.
+      # Using the SHA gives us traceability from container
+      # image back to source code.
+      # ------------------------------------------------------
+      - name: Generate image tag
+        id: version
+        shell: bash
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BRANCH="${GITHUB_REF_NAME//\//-}"
+
+          IMAGE_TAG="${BRANCH}-${SHORT_SHA}"
+
+          echo "Generated image tag: ${IMAGE_TAG}"
+
+          echo "image-tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+
+      # ------------------------------------------------------
+      # Step 3: Setup Docker Buildx
+      #
+      # Buildx provides modern Docker build capabilities
+      # and will later allow us to use registry/build caching.
+      # ------------------------------------------------------
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+
+      # ------------------------------------------------------
+      # Step 4: Build Docker image
+      #
+      # load: true is important because Trivy needs access
+      # to the locally built Docker image in the next step.
+      #
+      # No registry push happens yet.
+      # ------------------------------------------------------
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.docker-context }}
+          file: ${{ inputs.dockerfile }}
+
+          push: false
+          load: true
+
+          tags: |
+            ${{ inputs.image-name }}:${{ steps.version.outputs.image-tag }}
+
+
+      # ------------------------------------------------------
+      # Step 5: Scan image for vulnerabilities
+      #
+      # Trivy checks OS packages and application dependencies
+      # contained inside the Docker image.
+      #
+      # severity:
+      #   Only HIGH and CRITICAL findings are considered.
+      #
+      # exit-code: 1
+      #   Makes the CI pipeline fail when matching
+      #   vulnerabilities are found.
+      #
+      # ignore-unfixed:
+      #   Does not fail on vulnerabilities for which no fix
+      #   currently exists.
+      # ------------------------------------------------------
+      - name: Scan Docker image with Trivy
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: "${{ inputs.image-name }}:${{ steps.version.outputs.image-tag }}"
+          format: "table"
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: "HIGH,CRITICAL"
+
+
+      # ------------------------------------------------------
+      # Step 6: Export Docker image
+      #
+      # GitHub hosted runners are temporary.
+      # If we don't save/push the image, it disappears after
+      # the workflow completes.
+      #
+      # This is temporary until we introduce container
+      # registries.
+      # ------------------------------------------------------
+      - name: Export Docker image
+        shell: bash
+        run: |
+          docker save \
+            "${{ inputs.image-name }}:${{ steps.version.outputs.image-tag }}" \
+            -o docker-image.tar
+
+
+      # ------------------------------------------------------
+      # Step 7: Upload Docker image as workflow artifact
+      #
+      # Later this will be replaced by:
+      #
+      #   GCP -> Artifact Registry
+      #   AWS -> ECR
+      #   Azure -> ACR
+      # ------------------------------------------------------
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.image-name }}-${{ steps.version.outputs.image-tag }}
+          path: docker-image.tar
+
+          # Portfolio/testing environment:
+          # keeping artifacts for 7 days avoids unnecessary
+          # storage consumption.
+          retention-days: 7
