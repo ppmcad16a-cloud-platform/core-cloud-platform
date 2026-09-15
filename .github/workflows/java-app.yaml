@@ -13,6 +13,18 @@ on:
         type: boolean
         default: true
 
+      build-docker:
+        description: "Build Docker image after successful Java build"
+        required: false
+        type: boolean
+        default: false
+
+      image-name:
+        description: "Docker image name"
+        required: false
+        type: string
+        default: ""  
+
 jobs:
   build:
 
@@ -42,8 +54,21 @@ jobs:
       - name: Package
         run: mvn package -DskipTests
 
-      - name: Upload JAR
-        uses: actions/upload-artifact@v4
-        with:
-          name: catalog-service-jar
-          path: target/*.jar
+        # ==========================================================
+  # Container Build
+  #
+  # This job runs only after the Java build succeeds.
+  #
+  # Instead of duplicating Docker logic here, we reuse the
+  # centralized docker-build.yaml workflow.
+  # ==========================================================
+  docker:
+    needs: build
+
+    # Allows applications to enable Docker gradually.
+    if: ${{ inputs.build-docker }}
+
+    uses: ppmcad16a-cloud-platform/core-cloud-platform/.github/workflows/docker-build.yaml@main
+
+    with:
+      image-name: ${{ inputs.image-name }}
