@@ -76,7 +76,7 @@ jobs:
   # Instead of duplicating Docker logic here, we reuse the
   # centralized docker-build.yaml workflow.
   # ==========================================================
-    docker:
+  docker:
     needs: build
 
     if: ${{ inputs.build-docker }}
