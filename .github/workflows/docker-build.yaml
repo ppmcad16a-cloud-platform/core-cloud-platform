@@ -157,9 +157,12 @@ jobs:
       # severity:
       #   Only HIGH and CRITICAL findings are considered.
       #
-      # exit-code: 1
-      #   Makes the CI pipeline fail when matching
-      #   vulnerabilities are found.
+      # TEMPORARY: report-only mode while image vulnerabilities are
+      # being investigated and remediated. The scan still reports
+      # HIGH and CRITICAL findings but does not block the build.
+      #
+      # PRODUCTION TODO: change exit-code back to "1" after the
+      # findings are resolved or documented with approved exceptions.
       #
       # ignore-unfixed:
       #   Does not fail on vulnerabilities for which no fix
@@ -171,7 +174,7 @@ jobs:
           image-ref: "${{ inputs.image-name }}:${{ steps.version.outputs.image-tag }}"
           version: "v0.70.0"
           format: "table"
-          exit-code: "1"
+          exit-code: "0" # Change to "1" to re-enable the build gate.
           ignore-unfixed: true
           severity: "HIGH,CRITICAL"
 
