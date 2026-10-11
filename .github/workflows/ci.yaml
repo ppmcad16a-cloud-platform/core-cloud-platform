@@ -1,0 +1,57 @@
+# ============================================================
+# CI for this repository itself
+#
+# Every service in the organisation runs the workflows stored
+# here, so a typo here breaks every pipeline at once.
+# This job checks all workflow files with actionlint (a linter
+# for GitHub Actions; it also runs shellcheck on the bash in
+# "run:" blocks) before anything reaches main.
+# ============================================================
+
+name: Core Platform CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint-workflows:
+    name: Lint workflows (actionlint)
+
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 10
+
+    env:
+      ACTIONLINT_VERSION: "1.7.12"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint (checksum verified)
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}"
+          file="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl -sSfLO "${base}/${file}"
+          curl -sSfLO "${base}/actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          grep " ${file}\$" "actionlint_${ACTIONLINT_VERSION}_checksums.txt" | sha256sum -c -
+          tar -xzf "${file}" actionlint
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Lint
+        shell: bash
+        run: actionlint -color
+
+  secret-scan:
+    uses: ./.github/workflows/security-scan.yaml

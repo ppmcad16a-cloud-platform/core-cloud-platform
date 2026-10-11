@@ -1,3 +1,13 @@
+# ============================================================
+# Reusable Python Application Pipeline
+#
+# Used by: commerce-service
+#
+#   build  -> pip install, pytest (with the repo's coverage gate)
+#   docker -> (optional) build + scan the container image
+#             using docker-build.yaml
+# ============================================================
+
 name: Reusable Python Application Pipeline
 
 on:
@@ -13,27 +23,93 @@ on:
         type: boolean
         default: true
 
+      # Folder containing requirements.txt ("." = repository root).
+      working-directory:
+        description: "Folder that contains requirements.txt"
+        required: false
+        type: string
+        default: "."
+
+      build-docker:
+        description: "Build Docker image after successful Python build"
+        required: false
+        type: boolean
+        default: false
+
+      image-name:
+        description: "Docker image name (required when build-docker is true)"
+        required: false
+        type: string
+        default: ""
+
+      fail-on-vulnerabilities:
+        description: "Fail the Docker job on fixable HIGH/CRITICAL vulnerabilities"
+        required: false
+        type: boolean
+        default: true
+
+# Least privilege: read the code, nothing else.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
 
+    timeout-minutes: 20
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+        shell: bash
+
     steps:
       - name: Checkout application
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate inputs
+        if: ${{ inputs.build-docker && inputs.image-name == '' }}
+        run: |
+          echo "::error::build-docker is true but image-name is empty"
+          exit 1
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ inputs.python-version }}
           cache: pip
+          cache-dependency-path: ${{ inputs.working-directory }}/requirements*.txt
 
+      # requirements-dev.txt normally includes requirements.txt
+      # plus test tools (pytest, pytest-cov ...).
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if (Test-Path requirements.txt) { pip install -r requirements.txt }
-          if (Test-Path requirements-dev.txt) { pip install -r requirements-dev.txt }
-        shell: pwsh
+          if [ -f requirements-dev.txt ]; then
+            pip install -r requirements-dev.txt
+          elif [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
 
+      # "python -m pytest" also works when pytest is not on PATH.
       - name: Run tests
         if: ${{ inputs.run-tests }}
-        run: pytest
+        run: python -m pytest
+
+  # ==========================================================
+  # Container Build (same shared Docker workflow as Java/Node)
+  # ==========================================================
+  docker:
+    needs: build
+
+    if: ${{ inputs.build-docker }}
+
+    uses: ppmcad16a-cloud-platform/core-cloud-platform/.github/workflows/docker-build.yaml@v1
+
+    with:
+      image-name: ${{ inputs.image-name }}
+      docker-context: ${{ inputs.working-directory }}
+      dockerfile: ${{ inputs.working-directory }}/Dockerfile
+      fail-on-vulnerabilities: ${{ inputs.fail-on-vulnerabilities }}

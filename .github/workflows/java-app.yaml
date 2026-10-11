@@ -1,3 +1,13 @@
+# ============================================================
+# Reusable Java (Maven) Application Pipeline
+#
+# Used by: identity-service
+#
+#   build  -> compile, test, coverage gate, package (one Maven run)
+#   docker -> (optional) build + scan the container image
+#             using docker-build.yaml
+# ============================================================
+
 name: Reusable Java Application Pipeline
 
 on:
@@ -13,6 +23,13 @@ on:
         type: boolean
         default: true
 
+      # Folder containing pom.xml ("." = repository root).
+      working-directory:
+        description: "Folder that contains pom.xml"
+        required: false
+        type: string
+        default: "."
+
       build-docker:
         description: "Build Docker image after successful Java build"
         required: false
@@ -20,71 +37,97 @@ on:
         default: false
 
       image-name:
-        description: "Docker image name"
+        description: "Docker image name (required when build-docker is true)"
         required: false
         type: string
-        default: ""  
+        default: ""
+
+      fail-on-vulnerabilities:
+        description: "Fail the Docker job on fixable HIGH/CRITICAL vulnerabilities"
+        required: false
+        type: boolean
+        default: true
+
+# Least privilege: read the code, nothing else.
+permissions:
+  contents: read
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
+
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
 
     steps:
       - name: Checkout application
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Fail early with a clear message instead of a confusing
+      # "invalid reference format" error inside Docker later.
+      - name: Validate inputs
+        if: ${{ inputs.build-docker && inputs.image-name == '' }}
+        run: |
+          echo "::error::build-docker is true but image-name is empty"
+          exit 1
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
         with:
           distribution: temurin
           java-version: ${{ inputs.java-version }}
           cache: maven
-
-      - name: Show Java version
-        run: java -version
-
-      - name: Compile
-        run: mvn clean compile
-
-      - name: Run tests
-        if: ${{ inputs.run-tests }}
-        run: mvn test
-
-      - name: Package
-        run: mvn package -DskipTests
+          cache-dependency-path: ${{ inputs.working-directory }}/pom.xml
 
       # ------------------------------------------------------
-      # Upload packaged Java application.
-      #
+      # One Maven run does everything:
+      #   verify = compile + unit tests + coverage check (JaCoCo)
+      #            + package the JAR
+      # -B  = batch mode (no colour codes / prompts in CI logs)
+      # -ntp = do not print every downloaded dependency
+      # ------------------------------------------------------
+      - name: Build, test and package
+        if: ${{ inputs.run-tests }}
+        run: mvn -B -ntp verify
+
+      - name: Package (tests skipped)
+        if: ${{ !inputs.run-tests }}
+        run: mvn -B -ntp package -DskipTests
+
+      # ------------------------------------------------------
       # Jobs execute on independent runners, so target/*.jar
       # must be transferred to the Docker job.
       # ------------------------------------------------------
       - name: Upload Java build artifact
         if: ${{ inputs.build-docker }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: java-build-artifact
-          path: target/*.jar
-          retention-days: 1  
+          path: ${{ inputs.working-directory }}/target/*.jar
+          retention-days: 1
+          if-no-files-found: error
 
-        # ==========================================================
+  # ==========================================================
   # Container Build
   #
-  # This job runs only after the Java build succeeds.
-  #
-  # Instead of duplicating Docker logic here, we reuse the
-  # centralized docker-build.yaml workflow.
+  # Runs only after the Java build succeeds. Docker logic lives
+  # in ONE place (docker-build.yaml) for every language.
   # ==========================================================
   docker:
     needs: build
 
     if: ${{ inputs.build-docker }}
 
-    uses: ppmcad16a-cloud-platform/core-cloud-platform/.github/workflows/docker-build.yaml@main
+    uses: ppmcad16a-cloud-platform/core-cloud-platform/.github/workflows/docker-build.yaml@v1
 
     with:
       image-name: ${{ inputs.image-name }}
-
-      # Tell Docker workflow which artifact it needs.
+      docker-context: ${{ inputs.working-directory }}
+      dockerfile: ${{ inputs.working-directory }}/Dockerfile
       application-artifact: java-build-artifact
+      fail-on-vulnerabilities: ${{ inputs.fail-on-vulnerabilities }}
