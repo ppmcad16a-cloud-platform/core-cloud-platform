@@ -71,3 +71,24 @@ Services call `...@v1`, not `...@main`.
   requests hide private repos — we briefly created duplicates of repos that already existed.
 - GitHub refuses a push that would overwrite someone else's history ("non-fast-forward"). That is
   a safety feature: investigate, don't force-push.
+
+## 7. Branch protection (how changes reach `main`)
+
+Every repository protects its `main` branch, **admins included**:
+
+- No direct pushes: every change goes through a **pull request**.
+- Service repos and `core-cloud-platform` can only merge when the pipeline checks are green
+  (`build / build`, `secret-scan / Secret scan (gitleaks)`, and for images the Docker scan).
+- No force-push, no deleting `main`.
+
+Daily routine:
+
+```bash
+git checkout -b my-change          # work on a branch
+git push -u origin my-change
+gh pr create                       # open the pull request, wait for green checks
+gh pr merge --squash --delete-branch
+```
+
+Why: `main` is what gets deployed. Branch protection guarantees that nothing reaches it without
+having passed tests, coverage, the vulnerability scan and the secret scan.
