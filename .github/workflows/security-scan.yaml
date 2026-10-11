@@ -1,0 +1,72 @@
+# ============================================================
+# Reusable Security Scan Workflow
+#
+# Purpose:
+#   Look through the WHOLE git history of the calling repository
+#   for leaked secrets (passwords, API keys, tokens, private keys)
+#   using gitleaks.
+#
+# Why the whole history?
+#   Deleting a secret in a later commit does not remove it from
+#   git history - anyone can still read the old commit.
+#
+# If this job fails:
+#   1. Rotate the leaked secret immediately (make a new one,
+#      disable the old one). Removing it from git is NOT enough.
+#   2. If it is a false positive (e.g. a fake value used in a
+#      test), add its fingerprint to a .gitleaksignore file in
+#      the app repo, with a comment explaining why.
+# ============================================================
+
+name: Reusable Security Scan
+
+on:
+  workflow_call:
+    inputs:
+      gitleaks-version:
+        description: "gitleaks release to use (without the leading v)"
+        required: false
+        type: string
+        default: "8.30.1"
+
+# Least privilege: read the code, nothing else.
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    name: Secret scan (gitleaks)
+
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 10
+
+    steps:
+      # fetch-depth: 0 -> download every commit, not just the latest.
+      - name: Checkout full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Same safe-install pattern as Trivy: official release,
+      # checksum verified before it is allowed to run.
+      - name: Install gitleaks (checksum verified)
+        shell: bash
+        env:
+          GITLEAKS_VERSION: ${{ inputs.gitleaks-version }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          file="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl -sSfLO "${base}/${file}"
+          curl -sSfLO "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep " ${file}\$" "gitleaks_${GITLEAKS_VERSION}_checksums.txt" | sha256sum -c -
+          tar -xzf "${file}" gitleaks
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      # --redact keeps the secret value itself out of the CI log.
+      - name: Scan git history for secrets
+        shell: bash
+        run: gitleaks git --redact --verbose --no-banner .

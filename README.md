@@ -1,171 +1,103 @@
 # Core Cloud Platform
 
-Organization repository for reusable GitHub Actions workflows and shared delivery standards.
+Organization repository for **reusable GitHub Actions workflows**, shared delivery standards and
+the project's **learning guides** (`docs/`).
 
-The complete application architecture, service responsibilities, technology stack, and runtime diagrams are maintained in the [workspace architecture README](../README.md). This document covers the shared workflow platform.
+> **In plain words:** every service repo has a tiny CI file that says *"run the shared Node (or Java,
+> or Python) pipeline from core-cloud-platform"*. The real pipeline logic lives here, once. Fix or
+> improve it here and every service gets the improvement.
 
 ## Platform Model
 
-Application repositories own their source code and service-specific triggers. This repository owns common build, test, packaging, security, infrastructure, deployment, and promotion workflow contracts.
-
 ```mermaid
 flowchart LR
-		Catalog[catalog-service\nNode.js]
-		Identity[identity_server\nJava]
-		Core[core-cloud-platform\nReusable workflows]
-		Node[node-app.yaml\nCurrent]
-		Java[java-app.yaml\nCurrent]
-		Future[Planned delivery workflows\nDocker, Terraform, Kubernetes, security, observability]
-
-		Catalog -->|workflow_call| Node
-		Identity -->|workflow_call| Java
-		Core --> Node
-		Core --> Java
-		Core --> Future
+    subgraph Services[Service repositories - thin callers]
+        GW[api-gateway-service]
+        CAT[catalog-service]
+        NOT[notification-service]
+        CLI[client-service]
+        SEED[seed-db-service]
+        ID[identity-service]
+        COM[commerce-service]
+    end
+    subgraph Core[core-cloud-platform - reusable workflows]
+        Node[node-app.yaml]
+        Java[java-app.yaml]
+        Py[python-app.yaml]
+        Docker[docker-build.yaml]
+        Sec[security-scan.yaml]
+    end
+    GW & CAT & NOT & CLI & SEED --> Node
+    ID --> Java
+    COM --> Py
+    Node & Java & Py -->|optional| Docker
+    Services --> Sec
 ```
 
-## Current Reusable Workflows
+## Reusable Workflows
 
-### `node-app.yaml`
+All workflows: trigger `workflow_call`, `permissions: contents: read`, every action pinned to a
+**commit SHA**, scanners downloaded from official releases and **checksum-verified**.
 
-Path: `.github/workflows/node-app.yaml`
+| Workflow | What it does | Main inputs |
+|---|---|---|
+| `node-app.yaml` | `npm ci` → `npm test` (repo's coverage gate) → `npm run build --if-present` → optional Docker job | `node-version` (22), `run-tests`, `working-directory`, `build-docker`, `image-name`, `fail-on-vulnerabilities` |
+| `java-app.yaml` | One `mvn verify` (compile + tests + JaCoCo gate + package) → optional Docker job | `java-version` (21), `run-tests`, `working-directory`, `build-docker`, `image-name`, `fail-on-vulnerabilities` |
+| `python-app.yaml` | `pip install -r requirements-dev.txt` → `python -m pytest` → optional Docker job | `python-version` (3.12), `run-tests`, `working-directory`, `build-docker`, `image-name`, `fail-on-vulnerabilities` |
+| `docker-build.yaml` | Build image (Buildx + layer cache) → **Trivy** scan, fails on fixable HIGH/CRITICAL → report artifact | `image-name`, `docker-context`, `dockerfile`, `application-artifact`, `fail-on-vulnerabilities` |
+| `security-scan.yaml` | **gitleaks** scan of the full git history for leaked secrets | `gitleaks-version` |
+| `ci.yaml` | CI for *this* repo: `actionlint` on every workflow + secret scan | — |
 
-Current consumers include `catalog-service`.
-
-- Reusable trigger: `workflow_call`
-- Configurable `node-version`, default `20`
-- Configurable `run-tests`, default `true`
-- Ubuntu runner
-- Node.js setup with npm caching
-- `npm ci`
-- Conditional `npm test`
-- Optional `npm run build --if-present`
-
-### `java-app.yaml`
-
-Path: `.github/workflows/java-app.yaml`
-
-Current consumers include `identity_server`.
-
-- Reusable trigger: `workflow_call`
-- Configurable `java-version`, default `21`
-- Configurable `run-tests`, default `true`
-- Ubuntu runner with Temurin JDK
-- Maven dependency caching
-- `mvn clean compile`
-- Conditional `mvn test`
-- `mvn package -DskipTests`
-- JAR artifact upload
-
-### Reuse pattern
-
-Service repositories provide only their event triggers and workflow inputs. For example:
+### How a service uses them
 
 ```yaml
+# .github/workflows/ci.yaml in a service repository
+name: Catalog Service CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
 jobs:
-	build:
-		uses: ppmcad16a-cloud-platform/core-cloud-platform/.github/workflows/node-app.yaml@main
-		with:
-			node-version: "20"
-			run-tests: true
+  build:
+    uses: ppmcad16a-cloud-platform/core-cloud-platform/.github/workflows/node-app.yaml@v1
+    with:
+      node-version: "22"
+      build-docker: true
+      image-name: catalog-service
+
+  secrets:
+    uses: ppmcad16a-cloud-platform/core-cloud-platform/.github/workflows/security-scan.yaml@v1
 ```
 
-This keeps service-specific configuration separate from common CI behavior and avoids duplicating build and test steps across repositories.
+### Versioning (`@v1`)
 
-## Current Versus Planned State
+Callers reference **`@v1`**, not `@main`. `v1` is a git tag that we move forward only after a
+change has been tested. A breaking change gets a new major tag (`v2`), so services upgrade when
+they are ready instead of breaking unexpectedly.
 
-| Capability | Current state | Planned organization workflow |
-|---|---|---|
-| Node.js build and test | Implemented | Extend with outputs, coverage, and configurable working directories |
-| Java compile, test, package | Implemented | Add verification, coverage reporting, and configurable Maven goals |
-| Docker image publishing | Placeholder workflow only | `docker-build-publish.yaml` |
-| Terraform provisioning | Placeholder workflow only | `terraform-plan-apply.yaml` |
-| Kubernetes deployment | Not implemented | `kubernetes-deploy.yaml` |
-| Security scanning | Placeholder workflow only | `security-scan.yaml` |
-| Observability dashboards | Not implemented | `observability.yaml` |
-| Secrets management | Not implemented | `secrets.yaml` and cloud workload identity |
-| Production promotion | Not implemented | `promote-production.yaml` |
-| AWS, Azure, and Google Cloud | Platform boundaries only | Provider adapters behind common workflow contracts |
+## Roadmap (multi-cloud project phases)
 
-The files `.github/workflows/docker-build.yaml`, `.github/workflows/security-scan.yaml`, and `.github/workflows/terraform.yaml` are currently placeholders.
-
-## Planned Reusable Workflow Catalog
-
-All future workflows should use `workflow_call`, explicit inputs and outputs, least-privilege permissions, and GitHub Environments where approvals are required.
-
-| Workflow | Responsibility | Representative inputs | Expected outputs |
-|---|---|---|---|
-| `node-app.yaml` | Build and test Node services | Node version, working directory, test command | Test result, build output |
-| `java-app.yaml` | Compile, test, and package Java services | Java version, Maven goals, test toggle | JAR artifact, test result |
-| `docker-build-publish.yaml` | Build and publish immutable container images | Service, Dockerfile, registry, image tag | Image digest, SBOM |
-| `terraform-plan-apply.yaml` | Validate, plan, and apply infrastructure | Cloud, environment, module path, backend | Plan artifact, apply status |
-| `kubernetes-deploy.yaml` | Deploy and verify workloads | Cluster, namespace, image digest, values | Rollout status, health result |
-| `security-scan.yaml` | Scan source, dependencies, secrets, IaC, and images | Scan scope, severity threshold | SARIF/report, gate result |
-| `observability.yaml` | Provision dashboards, alerts, metrics, logs, and traces | Cloud, cluster, service labels | Monitoring configuration |
-| `secrets.yaml` | Connect jobs and workloads to secret managers | Cloud, environment, secret paths, role | Short-lived secret access |
-| `promote-production.yaml` | Promote a verified release | Artifact digest, source, target environment | Promotion record, release status |
-
-## Planned Delivery Flow
-
-```mermaid
-flowchart LR
-		PR[Pull request] --> CI[Build and test]
-		CI --> Scan[Security and quality gates]
-		Scan --> Image[Build and publish image]
-		Image --> Plan[Terraform plan]
-		Plan --> Apply[Approved infrastructure apply]
-		Apply --> Deploy[Kubernetes deployment]
-		Deploy --> Verify[Smoke tests and health checks]
-		Verify --> Promote[Approved production promotion]
-		Promote --> Observe[Dashboards, logs, metrics, traces]
-```
-
-## Multi-Cloud Target
-
-The future platform is designed for AWS, Microsoft Azure, and Google Cloud. Kubernetes is the common application runtime, while Terraform modules and workflow inputs isolate provider-specific implementation details.
-
-```mermaid
-flowchart TB
-		Workflows[Reusable GitHub Actions]
-		IaC[Terraform modules and provider adapters]
-		Runtime[Kubernetes workloads]
-		AWS[AWS\nEKS, ECR, IAM, VPC]
-		Azure[Azure\nAKS, ACR, Managed Identity, VNet]
-		GCP[Google Cloud\nGKE, Artifact Registry, IAM, VPC]
-		Native[Cloud-native secrets, networking, registries, observability]
-
-		Workflows --> IaC
-		Workflows --> Runtime
-		IaC --> AWS
-		IaC --> Azure
-		IaC --> GCP
-		AWS --> Runtime
-		Azure --> Runtime
-		GCP --> Runtime
-		Runtime --> Native
-```
+| Capability | State |
+|---|---|
+| Node / Java / Python build + test | Done |
+| Image build + Trivy gate | Done |
+| Secret scanning (gitleaks) | Done |
+| Push images to ECR + ACR + Artifact Registry (OIDC, no stored keys) | Phase 8 |
+| `terraform.yaml` — fmt/validate/lint → plan on PR → approved apply | Phase 3 |
+| Trigger Jenkins deployment (one cloud at a time, smoke tests, auto-rollback) | Phase 8 |
 
 ## Workflow Governance
 
-- Pin third-party actions to reviewed versions or commit SHAs.
+- Pin third-party actions to full commit SHAs (comment the version next to it).
 - Set explicit `permissions` and use least privilege.
 - Prefer GitHub OIDC over long-lived cloud access keys.
 - Promote immutable image digests, not mutable tags.
 - Keep secrets out of source code, images, Terraform variables, and logs.
 - Store Terraform state remotely with encryption and locking.
 - Require security and health gates before deployment.
-- Use GitHub Environments for staging and production approvals.
-- Expose useful outputs such as image digests, plan locations, and rollout status.
 - Keep callers thin and common delivery logic centralized here.
 
-## Implementation Order
+## Learning guides
 
-1. Add Dockerfiles and health checks for deployable services.
-2. Implement `docker-build-publish.yaml` with registry authentication and image digests.
-3. Add Terraform modules, remote state, and AWS/Azure/Google Cloud adapters.
-4. Add Kubernetes manifests or Helm charts and `kubernetes-deploy.yaml`.
-5. Implement source, dependency, secret, IaC, and image scanning.
-6. Integrate cloud secret managers through OIDC/workload identity.
-7. Provision dashboards, alerts, logs, metrics, and traces.
-8. Add staging and production approvals, smoke tests, rollback, and promotion.
-
+Start at [`docs/00-prerequisites.md`](docs/00-prerequisites.md).

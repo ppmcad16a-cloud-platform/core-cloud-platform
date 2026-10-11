@@ -1,0 +1,3 @@
+# Every change to the shared pipelines affects all services,
+# so a platform owner is automatically asked to review it.
+* @Rishav-Mukhopadhyay @sheikhshuaib35-png
