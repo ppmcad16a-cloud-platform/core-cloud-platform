@@ -49,6 +49,12 @@ on:
         type: boolean
         default: true
 
+      push-images:
+        description: "Push the scanned image to the 3 cloud registries (main branch only)"
+        required: false
+        type: boolean
+        default: false
+
 # Least privilege: read the code, nothing else.
 permissions:
   contents: read
@@ -105,10 +111,16 @@ jobs:
 
     if: ${{ inputs.build-docker }}
 
-    uses: ppmcad16a-cloud-platform/core-cloud-platform/.github/workflows/docker-build.yaml@v1
+    # Passed on to docker-build: lets it log in to the clouds.
+    permissions:
+      contents: read
+      id-token: write
+
+    uses: ppmcad16a-cloud-platform/core-cloud-platform/.github/workflows/docker-build.yaml@v2
 
     with:
       image-name: ${{ inputs.image-name }}
       docker-context: ${{ inputs.working-directory }}
       dockerfile: ${{ inputs.working-directory }}/Dockerfile
       fail-on-vulnerabilities: ${{ inputs.fail-on-vulnerabilities }}
+      push-images: ${{ inputs.push-images }}
