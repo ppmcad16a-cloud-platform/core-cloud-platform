@@ -55,6 +55,12 @@ on:
         type: boolean
         default: false
 
+      deploy-after-push:
+        description: "After pushing, ask Jenkins to deploy the image to GCP -> Azure -> AWS"
+        required: false
+        type: boolean
+        default: false
+
 # Least privilege: read the code, nothing else.
 permissions:
   contents: read
@@ -124,3 +130,22 @@ jobs:
       dockerfile: ${{ inputs.working-directory }}/Dockerfile
       fail-on-vulnerabilities: ${{ inputs.fail-on-vulnerabilities }}
       push-images: ${{ inputs.push-images }}
+
+  # ==========================================================
+  # Deploy: once the image is in all 3 registries,
+  # ask Jenkins to roll it out GCP -> Azure -> AWS.
+  # ==========================================================
+  deploy:
+    needs: docker
+
+    if: ${{ inputs.deploy-after-push && needs.docker.outputs.pushed == 'true' }}
+
+    permissions:
+      contents: read
+      id-token: write
+
+    uses: ppmcad16a-cloud-platform/core-cloud-platform/.github/workflows/trigger-deploy.yaml@v2
+
+    with:
+      service: ${{ needs.docker.outputs.image-name }}
+      image-tag: ${{ needs.docker.outputs.image-tag }}

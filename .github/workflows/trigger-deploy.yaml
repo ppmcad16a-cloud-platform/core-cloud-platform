@@ -1,0 +1,125 @@
+# ============================================================
+# Reusable Deploy Trigger (Phase 8c)
+#
+# Asks Jenkins (in GKE) to deploy one service image:
+#   POST https://jenkins.<domain>/generic-webhook-trigger/invoke
+#        {"service": "...", "image_tag": "..."}
+#
+# The request must pass two locks:
+#   1. Cloudflare Access -> service token headers
+#   2. Jenkins           -> trigger token (Authorization: Bearer)
+# All three values are read at run time from GCP Secret Manager
+# with the keyless CI identity - nothing is stored in GitHub.
+#
+# Jenkins only runs while the clusters are up. When it is offline
+# this job does NOT fail (the image is already safely pushed to
+# all 3 registries); it prints the tag to deploy later.
+# ============================================================
+
+name: Reusable Deploy Trigger
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: "Service to deploy, e.g. catalog-service"
+        required: true
+        type: string
+      image-tag:
+        description: "Image tag already in all 3 registries, e.g. main-a1b2c3d"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  JENKINS_URL: https://jenkins.rishavmukhopadhyay.store
+  GCP_PROJECT_ID: project-899ced78-a554-40c2-96c
+  GCP_WIF_PROVIDER: projects/692591977615/locations/global/workloadIdentityPools/github/providers/github-oidc
+  GCP_CI_SERVICE_ACCOUNT: gha-push@project-899ced78-a554-40c2-96c.iam.gserviceaccount.com
+
+jobs:
+  trigger:
+    name: Ask Jenkins to deploy
+
+    runs-on: ubuntu-latest
+
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+      id-token: write # keyless login to GCP (to read the 3 secrets)
+
+    steps:
+      - name: Log in to Google Cloud (keyless)
+        id: gcp
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_CI_SERVICE_ACCOUNT }}
+          token_format: access_token
+          create_credentials_file: false
+
+      - name: Trigger deploy-mern
+        shell: bash
+        env:
+          GCP_TOKEN: ${{ steps.gcp.outputs.access_token }}
+          SERVICE: ${{ inputs.service }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          set -euo pipefail
+
+          # Read one secret value from GCP Secret Manager (REST API).
+          read_secret() {
+            curl -sSf -H "Authorization: Bearer ${GCP_TOKEN}" \
+              "https://secretmanager.googleapis.com/v1/projects/${GCP_PROJECT_ID}/secrets/$1/versions/latest:access" \
+              | jq -r '.payload.data' | base64 -d
+          }
+
+          # add-mask: if a value ever appeared in the log it would show as ***
+          TRIGGER_TOKEN="$(read_secret jenkins-trigger-token)"
+          echo "::add-mask::${TRIGGER_TOKEN}"
+          CF_ID="$(read_secret ci-cloudflare-access-client-id)"
+          echo "::add-mask::${CF_ID}"
+          CF_SECRET="$(read_secret ci-cloudflare-access-client-secret)"
+          echo "::add-mask::${CF_SECRET}"
+
+          body="$(jq -n --arg service "${SERVICE}" --arg tag "${IMAGE_TAG}" \
+            '{service: $service, image_tag: $tag}')"
+
+          # No answer at all (DNS/connection error) -> status 000
+          status="$(curl -sS -o response.json -w '%{http_code}' --max-time 30 \
+            -X POST "${JENKINS_URL}/generic-webhook-trigger/invoke" \
+            -H "CF-Access-Client-Id: ${CF_ID}" \
+            -H "CF-Access-Client-Secret: ${CF_SECRET}" \
+            -H "Authorization: Bearer ${TRIGGER_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "${body}")" || status="000"
+
+          case "${status}" in
+            200)
+              if jq -e '.jobs["deploy-mern"].triggered == true' response.json > /dev/null; then
+                echo "::notice::Jenkins started deploy-mern: ${SERVICE} ${IMAGE_TAG} (GCP -> Azure -> AWS)"
+                {
+                  echo "### Deploy started: ${SERVICE} ${IMAGE_TAG}"
+                  echo "Follow it in Jenkins: ${JENKINS_URL}/job/deploy-mern/"
+                } >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "::error::Jenkins answered but did not start deploy-mern"
+                jq . response.json
+                exit 1
+              fi
+              ;;
+            000|502|503|504|521|522|523|530)
+              echo "::warning::Jenkins is offline (clusters switched off?) - HTTP ${status}. The image is pushed; deploy later with SERVICE=${SERVICE} IMAGE_TAG=${IMAGE_TAG}"
+              {
+                echo "### Not deployed - Jenkins offline (HTTP ${status})"
+                echo "The image is in all 3 registries. Deploy later: SERVICE=${SERVICE} IMAGE_TAG=${IMAGE_TAG}"
+              } >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "::error::Jenkins trigger refused - HTTP ${status} (wrong trigger token, or Cloudflare Access policy?)"
+              exit 1
+              ;;
+          esac
