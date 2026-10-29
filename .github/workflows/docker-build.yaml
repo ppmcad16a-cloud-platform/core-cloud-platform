@@ -7,10 +7,9 @@
 #   3. Build the application's Docker image
 #   4. Scan the image with Trivy (blocks HIGH/CRITICAL with a fix)
 #   5. Keep the scan report as a workflow artifact
-#
-# Later (Phase 8):
-#   The same job pushes the scanned image to
-#   ECR (AWS) + ACR (Azure) + Artifact Registry (GCP).
+#   6. ONLY on a push to main (and push-images: true):
+#      push the SAME scanned image to
+#      ECR (AWS) + ACR (Azure) + Artifact Registry (GCP)
 #
 # Security notes:
 #   - Every third-party action is pinned to a full commit SHA.
@@ -19,6 +18,10 @@
 #     tags of a popular scanner action - pinning protects us.)
 #   - Trivy is NOT run through a wrapper action. We download the
 #     official release and verify its SHA-256 checksum first.
+#   - No cloud keys are stored anywhere. GitHub gives this job a
+#     signed identity card (OIDC token); each cloud accepts it only
+#     for the main branch of our service repos (see the
+#     ci-push.tf files in aws/azure/gcp-platform).
 # ============================================================
 
 name: Reusable Docker Build
@@ -80,6 +83,15 @@ on:
         type: string
         default: "0.74.0"
 
+      # true = after a successful scan, push to the 3 cloud registries.
+      # Even when true, pushing only happens for a push to main;
+      # pull requests are always build + scan only.
+      push-images:
+        description: "Push the scanned image to ECR, ACR and Artifact Registry (main branch only)"
+        required: false
+        type: boolean
+        default: false
+
     outputs:
 
       # Makes the generated tag available to the calling workflow.
@@ -91,9 +103,27 @@ on:
         description: "Normalised (lower-case) image name"
         value: ${{ jobs.docker-build.outputs.image-name }}
 
+      pushed:
+        description: "'true' when the image is now in all 3 registries"
+        value: ${{ jobs.docker-build.outputs.pushed }}
+
 # Least privilege: this workflow only needs to read the code.
+# (The job below adds id-token: write - only to log in to the clouds.)
 permissions:
   contents: read
+
+# Where images go. These are addresses and IDs, not secrets.
+env:
+  AWS_REGION: ap-south-1
+  ECR_REGISTRY: 722867460821.dkr.ecr.ap-south-1.amazonaws.com
+  AWS_PUSH_ROLE_PREFIX: arn:aws:iam::722867460821:role/gha-push-
+  ACR_NAME: acrmern0botwx
+  AZURE_CLIENT_ID: 8b73b640-2826-4a18-a033-2d707eb67be6
+  AZURE_TENANT_ID: 0fd463ca-1b22-4674-bea5-699c2e0ad98b
+  AZURE_SUBSCRIPTION_ID: 9c0602c2-72a4-4432-a192-7abf998e2b60
+  GAR_REGISTRY: asia-south1-docker.pkg.dev/project-899ced78-a554-40c2-96c/mern
+  GCP_WIF_PROVIDER: projects/692591977615/locations/global/workloadIdentityPools/github/providers/github-oidc
+  GCP_PUSH_SERVICE_ACCOUNT: gha-push@project-899ced78-a554-40c2-96c.iam.gserviceaccount.com
 
 jobs:
 
@@ -104,9 +134,18 @@ jobs:
 
     timeout-minutes: 30
 
+    permissions:
+      contents: read
+      id-token: write # ask GitHub for an identity card (used only by the push steps)
+
+    env:
+      # "true" only for a push to main with push-images enabled.
+      PUSH: ${{ inputs.push-images && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
     outputs:
       image-tag: ${{ steps.version.outputs.image-tag }}
       image-name: ${{ steps.version.outputs.image-name }}
+      pushed: ${{ steps.push.outputs.pushed || 'false' }}
 
     steps:
 
@@ -254,3 +293,76 @@ jobs:
           path: trivy-report.txt
           retention-days: 7
           if-no-files-found: ignore
+
+      # ------------------------------------------------------
+      # Steps 8-11 run ONLY for a push to main (env.PUSH).
+      # The image reached this point = tests passed + scan passed.
+      #
+      # Step 8: log in to the 3 clouds with the identity card.
+      #   AWS   -> role gha-push-<this service> (own repository only)
+      #   Azure -> identity id-gha-push (AcrPush on our registry)
+      #   GCP   -> service account gha-push (writer on "mern")
+      # ------------------------------------------------------
+      - name: Log in to AWS (keyless)
+        if: ${{ env.PUSH == 'true' }}
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ env.AWS_PUSH_ROLE_PREFIX }}${{ steps.version.outputs.image-name }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Azure (keyless)
+        if: ${{ env.PUSH == 'true' }}
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to Google Cloud (keyless)
+        id: gcp
+        if: ${{ env.PUSH == 'true' }}
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_PUSH_SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      # ------------------------------------------------------
+      # Step 9: push the SAME local image (same digest) to all 3.
+      #
+      # A tag is never overwritten: if a registry already has it
+      # (e.g. this run is a re-run), that registry is skipped.
+      # Passwords go through stdin, never on the command line.
+      # ------------------------------------------------------
+      - name: Push to ECR, ACR and Artifact Registry
+        id: push
+        if: ${{ env.PUSH == 'true' }}
+        shell: bash
+        env:
+          LOCAL_IMAGE: ${{ steps.version.outputs.image-name }}:${{ steps.version.outputs.image-tag }}
+          IMAGE_NAME: ${{ steps.version.outputs.image-name }}
+          IMAGE_TAG: ${{ steps.version.outputs.image-tag }}
+          GCP_TOKEN: ${{ steps.gcp.outputs.access_token }}
+        run: |
+          set -euo pipefail
+
+          aws ecr get-login-password --region "${AWS_REGION}" \
+            | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+          az acr login --name "${ACR_NAME}"
+          echo "${GCP_TOKEN}" \
+            | docker login --username oauth2accesstoken --password-stdin "https://${GAR_REGISTRY%%/*}"
+
+          echo "### Image ${IMAGE_NAME}:${IMAGE_TAG}" >> "$GITHUB_STEP_SUMMARY"
+          for registry in "${ECR_REGISTRY}" "${ACR_NAME}.azurecr.io" "${GAR_REGISTRY}"; do
+            target="${registry}/${IMAGE_NAME}:${IMAGE_TAG}"
+            if docker manifest inspect "${target}" > /dev/null 2>&1; then
+              echo "::notice::${target} already exists - tags are never overwritten, skipping"
+              echo "- ${target} (already there)" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            docker tag "${LOCAL_IMAGE}" "${target}"
+            docker push "${target}"
+            echo "- ${target} (pushed)" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
