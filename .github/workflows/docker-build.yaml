@@ -11,6 +11,13 @@
 #      push the SAME scanned image to
 #      ECR (AWS) + ACR (Azure) + Artifact Registry (GCP)
 #
+# One cloud down? (v2.2.0) The image still goes to every
+# registry that answers; the run stays green with a warning.
+# It only fails when NO registry got the image. The automatic
+# deploy waits until all 3 have it (re-run the workflow when
+# the cloud is back - registries that already have the tag
+# are skipped, the missing one is filled in).
+#
 # Security notes:
 #   - Every third-party action is pinned to a full commit SHA.
 #     A tag like "v4" can be moved by whoever controls the action
@@ -107,6 +114,10 @@ on:
         description: "'true' when the image is now in all 3 registries"
         value: ${{ jobs.docker-build.outputs.pushed }}
 
+      pushed-to:
+        description: "Clouds whose registry has the image, e.g. 'aws,gcp' (empty when nothing was pushed)"
+        value: ${{ jobs.docker-build.outputs.pushed-to }}
+
 # Least privilege: this workflow only needs to read the code.
 # (The job below adds id-token: write - only to log in to the clouds.)
 permissions:
@@ -146,6 +157,7 @@ jobs:
       image-tag: ${{ steps.version.outputs.image-tag }}
       image-name: ${{ steps.version.outputs.image-name }}
       pushed: ${{ steps.push.outputs.pushed || 'false' }}
+      pushed-to: ${{ steps.push.outputs.pushed-to || '' }}
 
     steps:
 
@@ -302,16 +314,24 @@ jobs:
       #   AWS   -> role gha-push-<this service> (own repository only)
       #   Azure -> identity id-gha-push (AcrPush on our registry)
       #   GCP   -> service account gha-push (writer on "mern")
+      #
+      # continue-on-error: a cloud that is down must not stop the
+      # push to the other two. The push step reads each login's
+      # result (steps.<id>.outcome) and skips the failed ones.
       # ------------------------------------------------------
       - name: Log in to AWS (keyless)
+        id: aws
         if: ${{ env.PUSH == 'true' }}
+        continue-on-error: true
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ env.AWS_PUSH_ROLE_PREFIX }}${{ steps.version.outputs.image-name }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Log in to Azure (keyless)
+        id: azure
         if: ${{ env.PUSH == 'true' }}
+        continue-on-error: true
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ env.AZURE_CLIENT_ID }}
@@ -321,6 +341,7 @@ jobs:
       - name: Log in to Google Cloud (keyless)
         id: gcp
         if: ${{ env.PUSH == 'true' }}
+        continue-on-error: true
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
@@ -328,10 +349,13 @@ jobs:
           token_format: access_token
 
       # ------------------------------------------------------
-      # Step 9: push the SAME local image (same digest) to all 3.
+      # Step 9: push the SAME local image (same digest) to every
+      # registry we could log in to - each one on its own, so one
+      # broken cloud never blocks the other two.
       #
       # A tag is never overwritten: if a registry already has it
       # (e.g. this run is a re-run), that registry is skipped.
+      # A push is tried 3 times (short network hiccups).
       # Passwords go through stdin, never on the command line.
       # ------------------------------------------------------
       - name: Push to ECR, ACR and Artifact Registry
@@ -343,26 +367,76 @@ jobs:
           IMAGE_NAME: ${{ steps.version.outputs.image-name }}
           IMAGE_TAG: ${{ steps.version.outputs.image-tag }}
           GCP_TOKEN: ${{ steps.gcp.outputs.access_token }}
+          AWS_LOGIN: ${{ steps.aws.outcome }}
+          AZURE_LOGIN: ${{ steps.azure.outcome }}
+          GCP_LOGIN: ${{ steps.gcp.outcome }}
+          RETRY_WAIT: "10" # seconds; the 2nd retry waits twice as long
         run: |
-          set -euo pipefail
+          set -uo pipefail # no -e: one failing cloud must not stop the others
 
-          aws ecr get-login-password --region "${AWS_REGION}" \
-            | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
-          az acr login --name "${ACR_NAME}"
-          echo "${GCP_TOKEN}" \
-            | docker login --username oauth2accesstoken --password-stdin "https://${GAR_REGISTRY%%/*}"
+          registry_login() {
+            case "$1" in
+              aws)   aws ecr get-login-password --region "${AWS_REGION}" \
+                       | docker login --username AWS --password-stdin "${ECR_REGISTRY}" ;;
+              azure) az acr login --name "${ACR_NAME}" ;;
+              gcp)   printf '%s' "${GCP_TOKEN}" \
+                       | docker login --username oauth2accesstoken --password-stdin "https://${GAR_REGISTRY%%/*}" ;;
+            esac
+          }
 
-          echo "### Image ${IMAGE_NAME}:${IMAGE_TAG}" >> "$GITHUB_STEP_SUMMARY"
-          for registry in "${ECR_REGISTRY}" "${ACR_NAME}.azurecr.io" "${GAR_REGISTRY}"; do
-            target="${registry}/${IMAGE_NAME}:${IMAGE_TAG}"
+          # push_to <cloud> <registry> <login outcome> - 0 when the registry has the image
+          push_to() {
+            local cloud="$1" target="$2/${IMAGE_NAME}:${IMAGE_TAG}" outcome="$3"
+            if [ "${outcome}" != "success" ]; then
+              echo "::warning::${cloud}: login to the cloud failed - not pushed to ${target}"
+              echo "- ${target} (NOT pushed: ${cloud} login failed)" >> "$GITHUB_STEP_SUMMARY"
+              return 1
+            fi
+            if ! registry_login "${cloud}"; then
+              echo "::warning::${cloud}: registry login failed - not pushed to ${target}"
+              echo "- ${target} (NOT pushed: registry login failed)" >> "$GITHUB_STEP_SUMMARY"
+              return 1
+            fi
             if docker manifest inspect "${target}" > /dev/null 2>&1; then
               echo "::notice::${target} already exists - tags are never overwritten, skipping"
               echo "- ${target} (already there)" >> "$GITHUB_STEP_SUMMARY"
-              continue
+              return 0
             fi
             docker tag "${LOCAL_IMAGE}" "${target}"
-            docker push "${target}"
-            echo "- ${target} (pushed)" >> "$GITHUB_STEP_SUMMARY"
-          done
+            for attempt in 1 2 3; do
+              if docker push "${target}"; then
+                echo "- ${target} (pushed)" >> "$GITHUB_STEP_SUMMARY"
+                return 0
+              fi
+              echo "${cloud}: push attempt ${attempt} failed"
+              if [ "${attempt}" -lt 3 ]; then sleep $((attempt * RETRY_WAIT)); fi
+            done
+            echo "::warning::${cloud}: push failed 3 times - not pushed to ${target}"
+            echo "- ${target} (NOT pushed: push failed 3 times)" >> "$GITHUB_STEP_SUMMARY"
+            return 1
+          }
 
+          echo "### Image ${IMAGE_NAME}:${IMAGE_TAG}" >> "$GITHUB_STEP_SUMMARY"
+          ok=()
+          missing=()
+          if push_to aws "${ECR_REGISTRY}" "${AWS_LOGIN}"; then ok+=(aws); else missing+=(aws); fi
+          if push_to azure "${ACR_NAME}.azurecr.io" "${AZURE_LOGIN}"; then ok+=(azure); else missing+=(azure); fi
+          if push_to gcp "${GAR_REGISTRY}" "${GCP_LOGIN}"; then ok+=(gcp); else missing+=(gcp); fi
+
+          pushed_to="$(IFS=,; echo "${ok[*]}")"
+          echo "pushed-to=${pushed_to}" >> "$GITHUB_OUTPUT"
+
+          if [ "${#ok[@]}" -eq 0 ]; then
+            echo "::error::The image reached NO registry - nothing can be deployed"
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          if [ "${#missing[@]}" -gt 0 ]; then
+            missing_list="$(IFS=,; echo "${missing[*]}")"
+            msg="Image is in ${pushed_to} only (missing: ${missing_list}) - no automatic deploy. When ${missing_list} is back, re-run this workflow (Re-run all jobs): it fills the gap, then deploys. To deploy now to the clouds that have it: Jenkins deploy-mern with TARGETS=${pushed_to}, or playbooks/deploy.yml -e target=<cloud>."
+            echo "::warning::${msg}"
+            printf '\n**%s**\n' "${msg}" >> "$GITHUB_STEP_SUMMARY"
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "pushed=true" >> "$GITHUB_OUTPUT"

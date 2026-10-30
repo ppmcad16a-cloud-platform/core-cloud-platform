@@ -49,6 +49,7 @@ Find a repo id with `gh api repos/ppmcad16a-cloud-platform/<repo> --jq .id`.
 | `v1` | build + scan only (old callers) |
 | `v2.0.0` | push to 3 registries (breaking: callers must grant `id-token: write`) |
 | `v2.1.1` | + optional deploy trigger (compatible) |
+| `v2.2.0` | one registry down no longer blocks the others; new output `pushed-to` (compatible) |
 | `v2` | moves forward to the newest compatible v2.x |
 
 Release order: **merge → `git pull` → check `git log -1` → tag**. A tag points at the commit you have checked out.
@@ -57,6 +58,19 @@ Release order: **merge → `git pull` → check `git log -1` → tag**. A tag po
 Merges still work. The image is pushed to all 3 registries, and the deploy job ends **green with a warning**:
 `Jenkins is offline … deploy later with SERVICE=x IMAGE_TAG=main-abc1234`.
 At the next session, run deploy-mern by hand with that tag (Build with Parameters).
+
+## When one cloud (or its registry) is down
+Each cloud login and each push stands on its own (`continue-on-error` on the logins, every push tried 3 times):
+
+| Registries that got the image | Run result | Automatic deploy |
+|---|---|---|
+| all 3 | green | yes |
+| 1 or 2 | green **with a warning** naming the missing cloud(s) | **no** - Jenkins would fail and roll back on the cloud without the image |
+| none | **red** | no |
+
+What to do after a warning:
+- **Later (normal case):** when the cloud is back, open the run → *Re-run all jobs*. Registries that already have the tag are skipped, the missing one is filled in, and then the deploy is triggered.
+- **Now (urgent fix):** deploy only to the clouds that have it. Use Jenkins deploy-mern with `TARGETS=` set to the clouds the warning lists. If Jenkins itself is down (GCP outage), run from WSL: `ansible-playbook playbooks/deploy.yml -e service=<svc> -e tag=<tag> -e target=<cloud>` (repo `platform-automation`).
 
 ## Manual operations
 - **Open Jenkins:** https://jenkins.rishavmukhopadhyay.store → Cloudflare emails you a PIN → Jenkins user `admin`, password from
@@ -84,6 +98,6 @@ At the next session, run deploy-mern by hand with that tag (Build with Parameter
 | `docker login` to ECR gives `400` on Windows PowerShell | PS 5.1 pipe re-encodes the token | `cmd /c "aws ecr get-login-password ... \| docker login ... --password-stdin ..."` |
 
 ## Known limitations / next steps
-- Third-party images are pulled from ghcr.io / Docker Hub at deploy time. Plan: mirror them into our own registries.
+- Third-party images are pulled from ghcr.io / Docker Hub at deploy time (AKS already uses ACR mirrors for External Secrets and OpenCost).
 - The Terraform CI logins of the platform repos still use the name-only subject (fix together with the Terraform CI workflow).
 - Jenkins state is rebuilt from code each session (no disk), so build history is lost at teardown by design.
