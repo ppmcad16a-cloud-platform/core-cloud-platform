@@ -5,7 +5,7 @@ GitHub organisation: [`ppmcad16a-cloud-platform`](https://github.com/ppmcad16a-c
 
 A polyglot MERN e-commerce shop, split into six microservices, runs on **Google Cloud (GKE), Microsoft Azure (AKS) and Amazon Web Services (EKS)**. Everything is created by Terraform, delivered by GitHub Actions + Jenkins, protected by keyless identities, watched by Prometheus/Grafana/Loki, backed up to all three clouds, and switched on and off with one Ansible command each.
 
-**Downloads:** [Project report (Word)](deliverables/Project-Report.docx) · [Presentation (PowerPoint, ~12 min)](deliverables/Presentation.pptx)
+**Downloads:** [Project report (PDF)](deliverables/Multi-Cloud-MERN-Platform-Report.pdf) · [Presentation (PowerPoint, ~12 min)](deliverables/Multi-Cloud-MERN-Platform-Presentation.pptx)
 
 ![Architecture](images/diagram-architecture.png)
 
