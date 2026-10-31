@@ -1,10 +1,10 @@
-# 02 — Making the services "cloud-ready"
+# Making the services "cloud-ready"
 
 > **In plain words:** code that works on a laptop is not automatically ready for Kubernetes.
 > Kubernetes needs to ask each service *"are you alive?"* and *"can you take traffic?"*, it needs
 > to collect numbers (metrics) and logs from it, and it needs the service to stop politely when a
-> new version replaces it. This phase added exactly those things to every service, packaged each
-> one as a small, secure container image, and ran the whole shop on a laptop to prove it works.
+> new version replaces it. Every service has exactly those things, is packaged as a small, secure
+> container image, and the whole shop also runs on a laptop with Docker Compose.
 
 ## 1. The checklist every service now meets
 
@@ -28,7 +28,7 @@ fix a database, it only adds downtime. So: liveness = "process is OK", readiness
 
 | Service | Notable changes |
 |---|---|
-| api-gateway | `/api/health` asks every backend's `/ready` (Cloudflare will use it to decide if a whole cloud is healthy); `/api/notification/*` no longer public; CORS decided only by the gateway (`CORS_ORIGINS`), backend CORS headers stripped |
+| api-gateway | `/api/health` asks every backend's `/ready` (Cloudflare uses it to decide whether a whole cloud is healthy); `/api/notification/*` no longer public; CORS decided only by the gateway (`CORS_ORIGINS`), backend CORS headers stripped |
 | catalog, notification | Mongoose 5 → 6 (CRITICAL CVE), jsonwebtoken 8 → 9; notification: fixed 3 bugs (bad JWT hung the socket, message to unknown user crashed, HTML injection in the order e-mail) |
 | commerce (Python) | Runs under **gunicorn** (production server) instead of Flask's dev server; 1 worker × 8 threads so metrics stay consistent |
 | identity (Java) | **Spring Boot 3.3 → 4.0** (40 CVEs → 0); Actuator probes on `/health` + `/ready`; a new test boots the app with the *real* production config (it caught 2 bugs that only appeared in the container) |

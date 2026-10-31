@@ -1,4 +1,4 @@
-# 01 — Repositories and shared CI pipelines
+# Repositories and shared CI pipelines
 
 > **In plain words:** a microservice company keeps **one Git repository per service** so that a
 > change to the catalog only rebuilds and redeploys the catalog. To stop every team writing its
@@ -10,9 +10,10 @@
 | Kind | Repositories | What lives there |
 |---|---|---|
 | Services | `api-gateway-service`, `identity-service`, `catalog-service`, `commerce-service`, `notification-service`, `client-service`, `seed-db-service` | App code, tests, Dockerfile, a tiny `.github/workflows/main.yaml` |
-| Shared pipelines + docs | `core-cloud-platform` | Reusable GitHub Actions workflows, these guides |
-| Infrastructure | `terraform-modules`, `aws-platform`, `azure-platform`, `gcp-platform`, `global-platform` | Terraform code (later phases) |
-| Runtime / ops | `platform-deployments`, `observability-platform`, `security-platform` | Helm charts, Jenkins, monitoring, policies (later phases) |
+| Shared pipelines + docs | `core-cloud-platform` | Reusable GitHub Actions workflows, the project handbook |
+| Infrastructure | `gcp-platform`, `azure-platform`, `aws-platform`, `global-platform` | Terraform for each cloud and for the cross-cloud layer (Cloudflare, Atlas, secrets) |
+| Runtime / operations | `platform-deployments`, `observability-platform`, `platform-automation` | Helm chart + Jenkins pipelines, alert rules + dashboards, Ansible playbooks |
+| Organisation | `.github` | Organisation profile page |
 
 All repositories are **public**. On a free GitHub organisation that unlocks branch protection,
 deployment approval gates and unlimited Actions minutes. That is safe **only because secrets never
@@ -27,7 +28,7 @@ A normal workflow runs on events (`push`, `pull_request`). A *reusable* workflow
 catalog-service/.github/workflows/main.yaml          core-cloud-platform/.github/workflows/node-app.yaml
 --------------------------------------------         -------------------------------------------------
 on: push / pull_request                    ───────►   on: workflow_call (inputs: node-version, ...)
-jobs.build.uses: .../node-app.yaml@v1                 steps: checkout → npm ci → npm test → build
+jobs.build.uses: .../node-app.yaml@v2                 steps: checkout → npm ci → npm test → build
   with: node-version: "22"                            optional: docker-build.yaml (build + Trivy)
 ```
 
@@ -44,16 +45,18 @@ jobs.build.uses: .../node-app.yaml@v1                 steps: checkout → npm ci
 | **gitleaks over the whole history** | A secret deleted in a later commit is still readable in the old commit. |
 | **`.gitignore` blocks `.env`, `*.pem`, `*.key`** | Prevents committing local secrets by accident. |
 
-## 4. Versioning the shared workflows (`@v1`)
+## 4. Versioning the shared workflows (`@v2`)
 
-Services call `...@v1`, not `...@main`.
+Services call `...@v2`, not `...@main`.
 
 - Changes to `core-cloud-platform` go through a pull request; CI lints every workflow (actionlint).
-- After merge and a test, the **`v1` tag is moved** to the new commit:
+- After merge, the release gets its own tag (`v2.2.0`) and the **`v2` tag is moved** to it:
   ```bash
-  git tag -f v1 && git push -f origin v1
+  git tag v2.2.0 && git push origin v2.2.0
+  git tag -f v2 && git push -f origin v2
   ```
-- A change that would break callers gets a **new** tag `v2`; services move when ready.
+- A change that would break callers gets a **new** major tag (`v3`); services move when ready.
+- History: `v1` build + scan · `v2.0.0` push to 3 registries · `v2.1.1` deploy trigger · `v2.2.0` registry-outage tolerance.
 
 ## 5. Redo it yourself — checklist
 
@@ -61,14 +64,14 @@ Services call `...@v1`, not `...@main`.
 2. Pin every `uses:` to a SHA: `gh api repos/<owner>/<action>/commits/<tag> --jq .sha`.
 3. Give every workflow `permissions: contents: read` (add more only where needed).
 4. Lint locally: download `actionlint` from its GitHub release, run `actionlint` in the repo.
-5. Tag a release: `git tag v1 && git push origin v1`.
-6. In each service repo add a thin caller (`uses: <org>/<repo>/.github/workflows/<file>@v1`).
+5. Tag a release: `git tag v2 && git push origin v2`.
+6. In each service repo add a thin caller (`uses: <org>/<repo>/.github/workflows/<file>@v2`).
 7. Open a pull request — the PR run is your test. Merge when green.
 
-## 6. Lessons learned during this phase
+## 6. Lessons learned
 
 - **Always list an organisation's repos while logged in** (`gh repo list <org>`). Logged-out
-  requests hide private repos — we briefly created duplicates of repos that already existed.
+  requests hide private repos, which makes it easy to create duplicates by mistake.
 - GitHub refuses a push that would overwrite someone else's history ("non-fast-forward"). That is
   a safety feature: investigate, don't force-push.
 
@@ -81,7 +84,7 @@ Every repository protects its `main` branch, **admins included**:
   (`build / build`, `secret-scan / Secret scan (gitleaks)`, and for images the Docker scan).
 - No force-push, no deleting `main`.
 
-Daily routine:
+Making a change:
 
 ```bash
 git checkout -b my-change          # work on a branch

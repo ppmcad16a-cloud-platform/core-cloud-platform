@@ -1,0 +1,7 @@
+flowchart LR
+  GHA["GitHub Actions<br/>(main branch, repo id)"] -- OIDC --> P1["AWS gha-push-&lt;service&gt; · Azure id-gha-push · GCP gha-push<br/>push images only"]
+  GHA -- OIDC --> P2["gha-failover-wake · id-gha-failover<br/>start AKS / resize node group only"]
+  JK["Jenkins pod in GKE"] -- "k8s token, federated" --> P3["AKS / EKS deployer<br/>namespace mern only"]
+  BK["backup job"] -- "workload identity" --> P4["write-only to 3 backup buckets"]
+  RS["restore drill"] -- "workload identity" --> P5["read-only from backups"]
+  ESO["External Secrets (each cluster)"] -- "workload identity" --> P6["read mern/* in its own vault"]

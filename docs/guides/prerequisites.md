@@ -1,8 +1,7 @@
-# 00 — Prerequisites: tools, accounts and logins
+# Prerequisites: tools, accounts and logins
 
-> **In plain words:** before we build anything we need (1) the command-line tools that talk to each
-> cloud, (2) accounts with permission to create things, and (3) to log in once on this computer.
-> Think of it as getting the keys to three different buildings before starting construction.
+> **In plain words:** to build or operate the platform you need (1) the command-line tools that talk to
+> each cloud, (2) accounts with permission to create things, and (3) to log in once on your computer.
 
 ## 1. Tools to install (Windows, one-time)
 
@@ -23,7 +22,9 @@ Close and reopen the terminal, then check that each one answers with a version:
 gh --version; terraform -version; aws --version; az version; gcloud --version; helm version
 ```
 
-Already installed on this machine: Git, Docker Desktop (includes `kubectl`), Java 21, Node, Python.
+Also needed: Git, Docker Desktop (includes `kubectl`), JDK 21, Node.js 22 and Python 3.12. For the Ansible
+playbooks: WSL Ubuntu 24.04 (`wsl --install -d Ubuntu-24.04`) — `platform-automation`'s `toolchain.yml` then
+installs the pinned Linux versions of every CLI.
 
 | Tool | What it is, in one line |
 |---|---|
@@ -36,8 +37,8 @@ Already installed on this machine: Git, Docker Desktop (includes `kubectl`), Jav
 ## 2. Tell Git who you are (one-time)
 
 ```powershell
-git config --global user.name  "Rishav Mukhopadhyay"
-git config --global user.email "rishav1994sonai@gmail.com"
+git config --global user.name  "Your Name"
+git config --global user.email "you@example.com"
 ```
 
 ## 3. Log in (each one opens a browser)
@@ -62,11 +63,11 @@ they need. After that, the robots do the work and nobody needs to keep admin key
 | AWS | Account is on the **paid plan** (credits still apply). The new "free plan" blocks EKS. |
 | Azure | Note your **Subscription ID** (`az account show`). Free accounts usually allow only **4 vCPU per region** — our cluster fits in that. |
 | GCP | Note your **Project ID** and that billing is linked. Trial accounts cap at **8 vCPU** total. |
-| GitHub | You are **Owner** of org `ppmcad16a-cloud-platform`. |
+| GitHub | You are **Owner** of the organisation (needed for branch protection and OIDC trust rules). |
 
 ## 5. Secrets hygiene (read once, follow forever)
 
 - A secret (password, token, key, connection string) **never** goes into Git, chat, screenshots or tickets.
 - If one leaks: **rotate it** (create a new one, delete the old one). Deleting the message is not enough.
-- In this project, secrets live only in each cloud's *vault* (AWS Secrets Manager, Azure Key Vault,
+- In this project, secrets live only in each cloud's *vault* (AWS SSM Parameter Store, Azure Key Vault,
   GCP Secret Manager) and are delivered to apps automatically.

@@ -1,0 +1,11 @@
+flowchart LR
+  U(["Browser"]) --> CF["Cloudflare LB<br/>first healthy pool"]
+  CF --> GW["Envoy Gateway<br/>(that cloud)"]
+  GW -->|"/"| FE["client-service<br/>React + nginx"]
+  GW -->|"/api, /socket.io"| API["api-gateway-service<br/>Node.js"]
+  API --> ID["identity-service<br/>Java 21 · Spring Boot"]
+  API --> CAT["catalog-service<br/>Node.js"]
+  API --> COM["commerce-service<br/>Python · Flask + gunicorn"]
+  API --> NOT["notification-service<br/>Node.js · Socket.IO"]
+  ID & CAT & COM --> DB[("MongoDB Atlas")]
+  COM -->|"order confirmation (in-cluster only)"| NOT

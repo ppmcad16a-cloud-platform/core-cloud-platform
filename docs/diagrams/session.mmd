@@ -1,0 +1,7 @@
+flowchart LR
+  P["preflight<br/>tools · 3 logins · IP · secrets"] --> M["ACR mirrors"]
+  M --> C1["GKE cluster"] & C2["AKS cluster"] & C3["EKS cluster"]
+  C1 & C2 & C3 --> GL["global layer<br/>DNS · LB pools · Atlas allow-list"]
+  GL --> X1["GCP: add-ons → shop → health"]
+  GL --> X2["Azure: add-ons → shop → health → sleep"]
+  GL --> X3["AWS: add-ons → shop → health → sleep"]

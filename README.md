@@ -1,103 +1,82 @@
-# Core Cloud Platform
+# core-cloud-platform
 
-Organization repository for **reusable GitHub Actions workflows**, shared delivery standards and
-the project's **learning guides** (`docs/`).
+The shared delivery standard of the MERN multi-cloud platform:
 
-> **In plain words:** every service repo has a tiny CI file that says *"run the shared Node (or Java,
-> or Python) pipeline from core-cloud-platform"*. The real pipeline logic lives here, once. Fix or
-> improve it here and every service gets the improvement.
+1. **Reusable GitHub Actions workflows** — every service repo contains only a thin caller; the real build, test, scan, image-publishing and deploy-trigger logic lives here once.
+2. **The project handbook** in [`docs/`](docs/README.md) — architecture, security, setup guide, operations runbook, CI/CD, monitoring and cost, disaster recovery, the final test report and troubleshooting.
 
-## Platform Model
+## Reusable workflows
 
-```mermaid
-flowchart LR
-    subgraph Services[Service repositories - thin callers]
-        GW[api-gateway-service]
-        CAT[catalog-service]
-        NOT[notification-service]
-        CLI[client-service]
-        SEED[seed-db-service]
-        ID[identity-service]
-        COM[commerce-service]
-    end
-    subgraph Core[core-cloud-platform - reusable workflows]
-        Node[node-app.yaml]
-        Java[java-app.yaml]
-        Py[python-app.yaml]
-        Docker[docker-build.yaml]
-        Sec[security-scan.yaml]
-    end
-    GW & CAT & NOT & CLI & SEED --> Node
-    ID --> Java
-    COM --> Py
-    Node & Java & Py -->|optional| Docker
-    Services --> Sec
-```
+All workflows run on `workflow_call`, use `permissions: contents: read` (plus `id-token: write` only where a cloud login is needed), pin every third-party action to a **commit SHA**, and download scanners from official releases with **checksum verification**.
 
-## Reusable Workflows
-
-All workflows: trigger `workflow_call`, `permissions: contents: read`, every action pinned to a
-**commit SHA**, scanners downloaded from official releases and **checksum-verified**.
-
-| Workflow | What it does | Main inputs |
-|---|---|---|
-| `node-app.yaml` | `npm ci` → `npm test` (repo's coverage gate) → `npm run build --if-present` → optional Docker job | `node-version` (22), `run-tests`, `working-directory`, `build-docker`, `image-name`, `fail-on-vulnerabilities` |
-| `java-app.yaml` | One `mvn verify` (compile + tests + JaCoCo gate + package) → optional Docker job | `java-version` (21), `run-tests`, `working-directory`, `build-docker`, `image-name`, `fail-on-vulnerabilities` |
-| `python-app.yaml` | `pip install -r requirements-dev.txt` → `python -m pytest` → optional Docker job | `python-version` (3.12), `run-tests`, `working-directory`, `build-docker`, `image-name`, `fail-on-vulnerabilities` |
-| `docker-build.yaml` | Build image (Buildx + layer cache) → **Trivy** scan, fails on fixable HIGH/CRITICAL → report artifact | `image-name`, `docker-context`, `dockerfile`, `application-artifact`, `fail-on-vulnerabilities` |
-| `security-scan.yaml` | **gitleaks** scan of the full git history for leaked secrets | `gitleaks-version` |
-| `ci.yaml` | CI for *this* repo: `actionlint` on every workflow + secret scan | — |
+| Workflow | What it does |
+|---|---|
+| `node-app.yaml` | `npm ci` → `npm test` (the repo's coverage gate) → build → optional image job → optional deploy trigger |
+| `java-app.yaml` | one `mvn verify` (compile, tests, JaCoCo gate, package) → JAR handed to the image job → optional deploy trigger |
+| `python-app.yaml` | `pip install -r requirements-dev.txt` → `pytest` → optional image job → optional deploy trigger |
+| `docker-build.yaml` | Buildx build with layer cache → **Trivy** (fails on fixable HIGH/CRITICAL) → on `main`: keyless login to AWS, Azure and GCP and push the **same image** to ECR, ACR and Artifact Registry; tolerates one registry being down |
+| `trigger-deploy.yaml` | reads the Cloudflare Access token and Jenkins trigger token from GCP Secret Manager and starts Jenkins `deploy-mern`; ends green with a "deploy later" warning when Jenkins is offline |
+| `security-scan.yaml` | **gitleaks** over the full git history |
+| `ci.yaml` | CI for this repository: `actionlint` (incl. shellcheck) on every workflow + secret scan |
 
 ### How a service uses them
 
 ```yaml
-# .github/workflows/ci.yaml in a service repository
+# <service>/.github/workflows/main.yaml
 name: Catalog Service CI
 on:
   push:
     branches: [main]
   pull_request:
-
+permissions:
+  contents: read
 jobs:
   build:
-    uses: ppmcad16a-cloud-platform/core-cloud-platform/.github/workflows/node-app.yaml@v1
+    permissions:
+      contents: read
+      id-token: write          # the image job logs in to the clouds (main branch only)
+    uses: ppmcad16a-cloud-platform/core-cloud-platform/.github/workflows/node-app.yaml@v2
     with:
       node-version: "22"
       build-docker: true
       image-name: catalog-service
-
-  secrets:
-    uses: ppmcad16a-cloud-platform/core-cloud-platform/.github/workflows/security-scan.yaml@v1
+      push-images: true
+      deploy-after-push: true
+  secret-scan:
+    uses: ppmcad16a-cloud-platform/core-cloud-platform/.github/workflows/security-scan.yaml@v2
 ```
 
-### Versioning (`@v1`)
+Pull requests only build, test and scan. Pushes to `main` additionally publish `<image>:main-<sha>` and trigger the deployment.
 
-Callers reference **`@v1`**, not `@main`. `v1` is a git tag that we move forward only after a
-change has been tested. A breaking change gets a new major tag (`v2`), so services upgrade when
-they are ready instead of breaking unexpectedly.
+### Versions
 
-## Roadmap (multi-cloud project phases)
+Callers reference **`@v2`**, a tag that is moved forward only to tested, backward-compatible releases. A breaking change gets a new major tag.
 
-| Capability | State |
+| Tag | Content |
 |---|---|
-| Node / Java / Python build + test | Done |
-| Image build + Trivy gate | Done |
-| Secret scanning (gitleaks) | Done |
-| Push images to ECR + ACR + Artifact Registry (OIDC, no stored keys) | Phase 8 |
-| `terraform.yaml` — fmt/validate/lint → plan on PR → approved apply | Phase 3 |
-| Trigger Jenkins deployment (one cloud at a time, smoke tests, auto-rollback) | Phase 8 |
+| `v1` | build, test, image build + Trivy |
+| `v2.0.0` | push to ECR, ACR and Artifact Registry with keyless OIDC logins |
+| `v2.1.1` | optional deploy trigger (`trigger-deploy.yaml`) |
+| `v2.2.0` | registry-outage tolerance; new output `pushed-to` |
 
-## Workflow Governance
+Release: merge → `git pull` → `git tag v2.x.y` → move `v2` → push both tags.
 
-- Pin third-party actions to full commit SHAs (comment the version next to it).
-- Set explicit `permissions` and use least privilege.
-- Prefer GitHub OIDC over long-lived cloud access keys.
-- Promote immutable image digests, not mutable tags.
-- Keep secrets out of source code, images, Terraform variables, and logs.
-- Store Terraform state remotely with encryption and locking.
-- Require security and health gates before deployment.
-- Keep callers thin and common delivery logic centralized here.
+## Dependencies
 
-## Learning guides
+| Depends on | For |
+|---|---|
+| [gcp-platform](https://github.com/ppmcad16a-cloud-platform/gcp-platform), [azure-platform](https://github.com/ppmcad16a-cloud-platform/azure-platform), [aws-platform](https://github.com/ppmcad16a-cloud-platform/aws-platform) | the keyless push identities and registries (`environments/prod/foundation/ci-push.tf`) trusted for each service repo's `main` branch |
+| [global-platform](https://github.com/ppmcad16a-cloud-platform/global-platform) | the CI secrets in GCP Secret Manager and the Cloudflare Access application in front of Jenkins |
+| Jenkins in GKE ([gcp-platform](https://github.com/ppmcad16a-cloud-platform/gcp-platform) add-ons) | receives the deploy trigger |
 
-Start at [`docs/00-prerequisites.md`](docs/00-prerequisites.md).
+| Used by | |
+|---|---|
+| [api-gateway-service](https://github.com/ppmcad16a-cloud-platform/api-gateway-service), [identity-service](https://github.com/ppmcad16a-cloud-platform/identity-service), [catalog-service](https://github.com/ppmcad16a-cloud-platform/catalog-service), [commerce-service](https://github.com/ppmcad16a-cloud-platform/commerce-service), [notification-service](https://github.com/ppmcad16a-cloud-platform/notification-service), [client-service](https://github.com/ppmcad16a-cloud-platform/client-service), [seed-db-service](https://github.com/ppmcad16a-cloud-platform/seed-db-service) | every CI run |
+
+## Documentation
+
+Start with the [handbook](docs/README.md). The [setup guide](docs/04-setup-guide.md) explains how to run the shop locally or rebuild the whole platform in your own accounts; background guides are in [`docs/guides/`](docs/guides/).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).

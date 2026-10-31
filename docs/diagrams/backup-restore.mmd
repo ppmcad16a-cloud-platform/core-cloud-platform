@@ -1,0 +1,4 @@
+flowchart LR
+  J["Jenkins backup-mongo<br/>(nightly)"] --> M["mongodump<br/>read-only user"] --> E["age encrypt<br/>(public key only)"] --> S["sha256 + manifest<br/>document counts"]
+  S --> G["GCS"] & S3["S3"] & B["Azure Blob"]
+  R["restore-drill SOURCE=gcs|s3|azure"] --> DL["download newest"] --> V["verify sha256"] --> DC["decrypt<br/>private key from vault"] --> MR["mongorestore →<br/>mern_restore_drill"] --> CMP["compare counts"] --> SL["Slack ✅"]

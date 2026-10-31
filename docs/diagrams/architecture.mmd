@@ -1,0 +1,22 @@
+flowchart TB
+  U(["Shoppers"]) --> CF["Cloudflare: proxied DNS · TLS Full strict · DDoS protection<br/>Load Balancer · failover order gcp → azure → aws<br/>health monitor GET /api/health every 60 s"]
+  CF -->|"only Cloudflare IPs reach a cloud"| G0
+  CF -.->|"only if GCP fails"| A0
+  CF -.->|"only if GCP and Azure fail"| W0
+  subgraph GCP["GCP — PRIMARY"]
+    G0["GKE · asia-south1 · always on"] --> G1["Envoy Gateway"] --> G2["6 shop services"]
+    G3["Jenkins (CD) · central Grafana<br/>Prometheus · Loki · Alloy · OpenCost"]
+  end
+  subgraph AZ["Azure — STANDBY"]
+    A0["AKS · centralindia · stopped"] --> A1["Envoy Gateway"] --> A2["6 shop services"]
+    A3["Prometheus · Loki · Alloy · OpenCost"]
+  end
+  subgraph AW["AWS — STANDBY"]
+    W0["EKS · ap-south-1 · 0 nodes"] --> W1["NLB → Envoy Gateway"] --> W2["6 shop services"]
+    W3["Prometheus · Loki · Alloy · OpenCost"]
+  end
+  G2 & A2 & W2 -->|"fixed egress IP + own DB user"| DB[("MongoDB Atlas M0<br/>mern_ecommerce")]
+  V1["Secret Manager"] -. ESO .-> G2
+  V2["Key Vault"] -. ESO .-> A2
+  V3["SSM Parameter Store"] -. ESO .-> W2
+  DB -. "nightly · age-encrypted" .-> BK["Backups in GCS · Azure Blob · S3"]
