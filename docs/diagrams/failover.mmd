@@ -1,0 +1,16 @@
+sequenceDiagram
+  participant CF as Cloudflare LB
+  participant GCP as GCP (primary)
+  participant WK as Worker mern-failover
+  participant GH as GitHub Actions failover-wake
+  participant AZ as Azure AKS (stopped)
+  participant AWS as AWS EKS (0 nodes)
+  CF->>GCP: GET /api/health every 60 s
+  GCP--xCF: fails (outage)
+  CF->>WK: notification "pool mern-gcp unhealthy"
+  WK->>GH: workflow_dispatch (secret token)
+  GH->>AZ: az aks start (keyless, start-only role)
+  GH->>AWS: node group 0 → 2 (keyless, resize-only role)
+  AWS-->>CF: /api/health 200 → pool healthy
+  CF->>AWS: shoppers served by first healthy standby
+  Note over CF,AWS: measured RTO 3 min 42 s (target 20 min)

@@ -1,0 +1,18 @@
+flowchart TD
+  A["Pull request on a service repo"] --> B["GitHub Actions: build + unit tests (coverage gate)<br/>gitleaks secret scan"]
+  B --> C["docker build → Trivy scan<br/>(blocks fixable HIGH/CRITICAL)"]
+  C --> D{"merged to main?"}
+  D -- "no (PR)" --> E["stop: nothing is pushed"]
+  D -- yes --> F["keyless OIDC login to AWS, Azure, GCP"]
+  F --> G["push the SAME image (same digest)<br/>ECR · ACR · Artifact Registry"]
+  G --> H{"all 3 registries got it?"}
+  H -- "no" --> H2["green with warning: deploy later<br/>(re-run fills the gap)"]
+  H -- yes --> I["trigger-deploy: Cloudflare Access + token → Jenkins"]
+  I --> J["Jenkins deploy-mern"]
+  J --> K["GCP: helm upgrade (rolling, --rollback-on-failure) → smoke test"]
+  K --> L["Azure: awake? → deploy → smoke test"]
+  L --> M["AWS: awake? → deploy → smoke test"]
+  K -. fail .-> R["roll back that cloud · STOP · Slack"]
+  L -. fail .-> R
+  M -. fail .-> R
+  M --> S["Slack: live in gcp,azure,aws (asleep ones skipped)"]

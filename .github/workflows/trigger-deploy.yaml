@@ -1,5 +1,5 @@
 # ============================================================
-# Reusable Deploy Trigger (Phase 8c)
+# Reusable Deploy Trigger
 #
 # Asks Jenkins (in GKE) to deploy one service image:
 #   POST https://jenkins.<domain>/generic-webhook-trigger/invoke
